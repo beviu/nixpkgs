@@ -89,12 +89,10 @@ let
     lib.mapAttrsToList (repo: v: ''
       (
         cd libraries/${repo}
-        ${
-          lib.optionalString (
-            repo != "codemirror-emacs"
-          ) "[ -d node_modules ] && rm -r node_modules\n
-        ln -s $node_modules node_modules"
-        }
+        ${lib.optionalString (
+          repo != "codemirror-emacs"
+        ) "[ -d node_modules ] && rm -r node_modules\n
+        ln -s $node_modules node_modules"}
         if grep -q '"build":' package.json; then npm run build; fi
       )
     '') gitDeps
