@@ -768,6 +768,7 @@
   ./services/misc/atuin.nix
   ./services/misc/autobrr.nix
   ./services/misc/autofs.nix
+  ./services/misc/autologin.nix
   ./services/misc/autorandr.nix
   ./services/misc/autosuspend.nix
   ./services/misc/bazarr.nix
