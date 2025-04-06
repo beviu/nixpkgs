@@ -1,0 +1,31 @@
+From 0127f1203dc643469d14327b233e617552fd4dde Mon Sep 17 00:00:00 2001
+From: beviu <contact@beviu.com>
+Date: Fri, 28 Mar 2025 10:56:38 +0100
+Subject: [PATCH] Fix "npm install" with recent NodeJS versions
+
+Update the nan package to fix build errors when using newer NodeJS
+versions.
+---
+ package-lock.json | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 083560c276..462df3efea 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -30302,9 +30302,9 @@
+       "dev": true
+     },
+     "node_modules/nan": {
+-      "version": "2.17.0",
+-      "resolved": "https://registry.npmjs.org/nan/-/nan-2.17.0.tgz",
+-      "integrity": "sha512-2ZTgtl0nJsO0KQCjEpxcIr5D+Yv90plTitZt9JBfQvVJDS5seMl3FOvsh3+9CoYWXf/1l5OaZzzF6nDm4cagaQ=="
++      "version": "2.22.2",
++      "resolved": "https://registry.npmjs.org/nan/-/nan-2.22.2.tgz",
++      "integrity": "sha512-DANghxFkS1plDdRsX0X9pm0Z6SJNN6gBdtXfanwoZ8hooC5gosGFSBGRYHUVPz1asKA/kMRqDRdHrluZ61SpBQ=="
+     },
+     "node_modules/nanoclone": {
+       "version": "0.2.1",
+-- 
+2.48.1
+

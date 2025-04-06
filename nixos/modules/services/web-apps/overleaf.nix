@@ -16,13 +16,16 @@ let
     "docstore"
     "document-updater"
     "filestore"
+    "history-v1"
     "notifications"
     "project-history"
     "real-time"
     "web"
-  ] ++ (optional (cfg.dicts != [ ]) "spelling");
-in
+  ];
 
+  secretsDirectory = "/var/lib/overleaf/secrets";
+
+in
 {
   meta.maintainers = with maintainers; [
     julienmalka
@@ -30,26 +33,40 @@ in
   ];
 
   options.services.overleaf = {
-    enable = mkEnableOption (''Overleaf'');
+    enable = mkEnableOption "Overleaf";
 
     hostname = mkOption {
       type = types.nullOr types.str;
       default = null;
       example = "overleaf.org";
-      description = ''This enable a default nginx reverse proxy configuration.'';
+      description = "This enable a default nginx reverse proxy configuration.";
     };
 
-    redis.enable = mkOption {
-      type = types.bool;
-      default = true;
-      description = ''Redis is enabled by default.'';
+    redis = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Start a Redis server for Overleaf.";
+      };
+
+      host = mkOption {
+        type = types.str;
+        default = "localhost";
+        description = "Redis host.";
+      };
+
+      port = mkOption {
+        type = types.port;
+        default = 6379;
+        description = "Redis port.";
+      };
     };
 
     mongodb = {
       enable = mkOption {
         type = types.bool;
         default = true;
-        description = ''MongoDB is enabled by default.'';
+        description = "MongoDB is enabled by default.";
       };
 
       package = mkOption {
@@ -77,8 +94,6 @@ in
       type = types.submodule { freeformType = with types; attrsOf str; };
       default = { };
       example = {
-        OVERLEAF_REDIS_HOST = "localhost";
-        OVERLEAF_REDIS_PORT = "6379";
         WEB_HOST = "localhost";
         WEB_PORT = "3032";
         GRACEFUL_SHUTDOWN_DELAY = "0";
@@ -101,21 +116,38 @@ in
       '';
     };
 
-    secrets = mkOption {
-      type = types.submodule { freeformType = with types; attrsOf str; };
-      default = { };
-      example = {
-        WEB_API_PASSWORD = "/etc/secrets/web_api_pass";
-        OVERLEAF_REDIS_PASS = "/run/secrets/overleaf_redis";
-        OVERLEAF_SESSION_SECRET = "/run/secrets/overleaf_session";
-        STAGING_PASSWORD_FILE = "/run/secrets/overleaf_staging";
-        OVERLEAF_EMAIL_SMTP_PASS = "/run/secrets/mail/overleaf.example.org";
+    secrets = {
+      webApiPasswordFile = mkOption {
+        type = types.str;
+        default = "${secretsDirectory}/web-api-password";
+        description = ''
+          Path to a file that contains the web API password.
+        '';
       };
-      description = ''
-        Secrets for Overleaf, see
-        <https://github.com/overleaf/overleaf/blob/main/server-ce/config/settings.js>
-        for supported values.
-      '';
+
+      historyApiPasswordFile = mkOption {
+        type = types.str;
+        default = "${secretsDirectory}/history-api-password";
+        description = ''
+          Path to a file that contains the history API password.
+        '';
+      };
+
+      sessionKeyFile = mkOption {
+        type = types.str;
+        default = "${secretsDirectory}/session-key";
+        description = ''
+          Path to the file that contains the key used to sign session cookies.
+        '';
+      };
+
+      jwtKeyFile = mkOption {
+        type = types.str;
+        default = "${secretsDirectory}/jwt-key";
+        description = ''
+          Path to the file that contains the JWT key.
+        '';
+      };
     };
 
     path = mkOption {
@@ -135,74 +167,67 @@ in
         .latexmkrc.
       '';
     };
-
-    dicts = mkOption {
-      type = with types; listOf package;
-      default = [ ];
-      example = literalExpression ''with pkgs.aspellDicts; [ en fr ]'';
-      description = ''
-        Additional languages to add to overleaf spell check engine,
-        based on aspell.
-      '';
-    };
-
-    dockerSandboxes.enable = mkEnableOption (''
-      Docker sandboxed compiles, provided the user adds
-        ```virtualization.docker.enable = true;```
-      to their configuration. It avoids read-access to all the filesystem by any Overleaf user.
-    '');
   };
 
   config = mkIf cfg.enable (mkMerge [
     {
-      warnings = (
-        optional (cfg.enable && !cfg.dockerSandboxes.enable) ''
-          Enabling services.overleaf.enable but not services.overleaf.dockerSandboxes.enable is insecure because it gives read-access to the filesystem to any Overleaf user upon compilation.
-        ''
-      );
+      assertions = [
+        {
+          assertion = cfg.redis.enable -> cfg.redis.host == "localhost";
+          message = "Local Redis server must be disabled when the Redis hostname is set.";
+        }
+      ];
 
       services.overleaf.settings = {
         NODE_ENV = "production";
+        NODE_CONFIG_DIR = "${pkgs.overleaf}/share/services/history-v1/config";
         OVERLEAF_CONFIG = "${pkgs.overleaf}/share/server-ce/config/settings.js";
         DATA_DIR = mkDefault "/var/lib/overleaf";
         OVERLEAF_MONGO_URL = mkDefault "mongodb://127.0.0.1:27017/overleaf";
-        OVERLEAF_REDIS_PATH = mkDefault "/run/redis-overleaf/redis.sock";
-        WEB_PORT = mkDefault "3032";
+        OVERLEAF_REDIS_HOST = cfg.redis.host;
+        OVERLEAF_REDIS_PORT = builtins.toString cfg.redis.port;
+        WEB_PORT = mkDefault "3000";
         WEB_API_USER = mkDefault "overleaf";
         GRACEFUL_SHUTDOWN_DELAY = mkDefault "0";
         OVERLEAF_FPH_DISPLAY_NEW_PROJECTS = mkDefault "true";
-        SANDBOXED_COMPILES = mkIf cfg.dockerSandboxes.enable "true";
-        TEX_LIVE_DOCKER_IMAGE = mkIf cfg.dockerSandboxes.enable "texlive/texlive";
       };
 
       systemd.targets.overleaf.requires = map (service: "overleaf-${service}.service") overleafServices;
 
       systemd.services =
         let
-          activateServices = service: {
-            "overleaf-${service}" = {
+          secretsToGenerate = builtins.map (lib.strings.removePrefix "${secretsDirectory}/") (
+            builtins.filter (lib.strings.hasPrefix "${secretsDirectory}/") (builtins.attrValues cfg.secrets)
+          );
+          deps =
+            builtins.map (name: "overleaf-generate-secret@${name}.service") secretsToGenerate
+            ++ lib.optionals cfg.redis.enable [ "redis-overleaf.service" ];
+          mkServiceUnit = service: {
+            name = "overleaf-${service}";
+            value = {
               description = "Overleaf ${service}";
               wantedBy = [
                 "overleaf.target"
                 "multi-user.target"
               ];
+              after = deps;
+              wants = deps;
               environment = cfg.settings;
               path =
                 with pkgs;
                 [
                   cfg.texlivePackage
                   qpdf
-                  (aspellWithDicts (ps: cfg.dicts))
                 ]
                 ++ cfg.path;
               serviceConfig = {
                 Type = "simple";
                 ExecStart = pkgs.writeShellScript "overleaf-${service}" ''
-                  # This sources the secrets as environment variables, less secure but avoids a patch:
-                  for secret in $(ls $CREDENTIALS_DIRECTORY)
-                  do
-                    export $secret=$(cat $CREDENTIALS_DIRECTORY/$secret)
-                  done
+                  export WEB_API_PASSWORD="$(< "$CREDENTIALS_DIRECTORY/webApiPasswordFile")"
+                  export V1_HISTORY_PASSWORD="$(< "$CREDENTIALS_DIRECTORY/historyApiPasswordFile")"
+                  export STAGING_PASSWORD="$(< "$CREDENTIALS_DIRECTORY/historyApiPasswordFile")"
+                  export OVERLEAF_SESSION_SECRET="$(< "$CREDENTIALS_DIRECTORY/sessionKeyFile")"
+                  export OT_JWT_AUTH_KEY="$(< "$CREDENTIALS_DIRECTORY/jwtKeyFile")"
 
                   # This softlinks the LaTeX configuration files to the home of Overleaf:
                   ${optionalString (cfg.latexmkrc != "") "ln -sf ${cfg.latexmkrc} /var/lib/overleaf/.latexmkrc"}
@@ -212,12 +237,12 @@ in
                 StateDirectory = "overleaf";
                 WorkingDirectory = "/var/lib/overleaf";
                 User = "overleaf";
-                LoadCredential = mapAttrsToList (name: path: "${name}:${path}") cfg.secrets;
-                SupplementaryGroups = mkIf cfg.dockerSandboxes.enable [ "docker" ];
+                LoadCredential = lib.mapAttrsToList (name: value: name + ":" + value) cfg.secrets;
                 ProtectHome = true;
                 ProtectSystem = "strict";
                 NoNewPrivileges = true;
                 PrivateDevices = true;
+                PrivateTmp = true;
                 ProtectHostname = true;
                 ProtectClock = true;
                 ProtectKernelTunables = true;
@@ -229,7 +254,25 @@ in
             };
           };
         in
-        mkMerge (map activateServices overleafServices);
+        builtins.listToAttrs (builtins.map mkServiceUnit overleafServices)
+        // {
+          "overleaf-generate-secret@" = {
+            description = "Generate secret %i for Overleaf";
+            script = ''
+              if [ ! -f "secrets/$SECRET" ]; then
+                mkdir -p secrets
+                head -c 32 /dev/random | base64 --wrap 0 | head -c -1 > "secrets/$SECRET"
+              fi
+            '';
+            environment.SECRET = "%i";
+            serviceConfig = {
+              Type = "oneshot";
+              WorkingDirectory = "/var/lib/overleaf";
+              User = "overleaf";
+              UMask = "0077";
+            };
+          };
+        };
 
       users.users.overleaf = {
         isSystemUser = true;
@@ -264,7 +307,8 @@ in
       services.redis.servers.overleaf = mkIf cfg.redis.enable {
         enable = true;
         user = "overleaf";
-        port = 0;
+        port = cfg.redis.port;
+        unixSocket = null;
       };
     }
 

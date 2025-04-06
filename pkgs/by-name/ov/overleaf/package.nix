@@ -1,111 +1,76 @@
 {
-  lib,
   buildNpmPackage,
-  nodejs_18,
+  cairo,
+  cmake,
   fetchFromGitHub,
-  fetchgit,
+  fetchNpmDeps,
+  lib,
+  nodejs,
+  pango,
+  pixman,
+  pkg-config,
+  ...
 }:
 
-let
-  # Overleaf contains git dependencies without package-lock.json
-  gitDeps = lib.mapAttrs (_: v: fetchgit v) (builtins.fromJSON (builtins.readFile ./git-deps.json));
-
-  patchGitDeps = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (repo: v: ''
-      cp -r ${v} libraries/${repo}
-      chmod -R +w libraries/${repo}
-    '') gitDeps
-  );
-
-  # Move the prepare scripts to build time
-  prepareGitDeps = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (repo: v: ''
-      (
-        cd libraries/${repo}
-        ${lib.optionalString (
-          repo != "codemirror-emacs"
-        ) "[ -d node_modules ] && rm -r node_modules\n
-        ln -s $node_modules node_modules"}
-        if grep -q '"build":' package.json; then npm run build; fi
-      )
-    '') gitDeps
-  );
-in
-
-(buildNpmPackage.override { nodejs = nodejs_18; }) {
+buildNpmPackage rec {
   pname = "overleaf";
-  version = "5.1";
+  version = "5.3.3";
 
   src = fetchFromGitHub {
     owner = "overleaf";
     repo = "overleaf";
-    rev = "a55d9fcf38755c6d982ddcbb0cd092b37d9879fa";
-    hash = "sha256-SThESUyzQBbmiBTg7l/xpTvZ3chxXWAma5SRkjPhn04=";
+    rev = "84413c991dedc28e8a51974d44e6dede3d344bec";
+    hash = "sha256-93h6mh62Aprc1rTqw/CKQQz4BX1FQ+DOnACF+xv7pLA=";
   };
 
-  # Patch all package.json to remove git dependencies
-  prePatch =
-    patchGitDeps
-    + ''
-      find . -name "package.json" -exec sed -i {} -e 's|"[github:]*overleaf\([^#]*\)#[^"]*|"file:../../libraries\1|' \;
-      cp ${./package-lock.json} package-lock.json
-      # npm ci fails due to git dependencies prepare scripts
-      sed -i libraries/codemirror-{autocomplete,search}/package.json -e 's|"prepare":|"build":|'
-      find libraries -name "package.json" -exec sed -i {} \
-        -e 's|"prepare":|"noprepare":|' \
-        -e 's|"build": "\(.*\.js\)"|"build": "${nodejs_18}/bin/node \1"|' \;
-    '';
+  patches = [ ./update-nan.patch ];
 
-  # Fix ace-builds path due to git dependencies workaround
-  patches = [ ./ace-builds.patch ];
+  npmDeps = fetchNpmDeps {
+    inherit
+      gitDepsLockfiles
+      src
+      patches
+      ;
+    name =
+      let
+        name = "${pname}-${version}";
+      in
+      "${name}-npm-deps";
+    hash = "sha256-nItYjIJQw0PXnpEo54sv+3gYqS8MAJ0SoK0g5h5ol+U=";
+  };
 
-  # Replace hard-coded values in settings by environment variables
-  postPatch = ''
-    find . -type f -not -path '*/\.*' -exec sed -E -i "s|SHARELATEX_|OVERLEAF_|g" {} +
-    sed -i server-ce/config/settings.js \
-      -e "s!mongodb://dockerhost/sharelatex!mongodb://localhost:27017/overleaf!" \
-      -e "s!'dockerhost',!undefined,\n      path: process.env.OVERLEAF_REDIS_PATH || undefined,!" \
-      -e "s!'6379'!undefined!" \
-      -e "s!httpAuthUser = 'sharelatex'!httpAuthUser = process.env.WEB_API_USER!" \
-      -e "s!'/var/lib/sharelatex\(.*\)'!\`\''${process.env.DATA_DIR}\1\`!" \
-      -e "s!'http://localhost:3000'!\`http://\''${process.env.WEB_API_HOST || process.env.WEB_HOST || 'localhost'}:\''${process.env.WEB_API_PORT || process.env.WEB_PORT || 3000}\`!"
-  '';
+  gitDepsLockfiles = import ./lockfiles;
 
-  npmDepsHash = "sha256-S1wLTeNlQwEpjiIcdviHhCNOL0X/gaApnFYoxZN75aU=";
-  npmRebuildFlags = [ "--ignore-scripts" ]; # If these scripts passed it would simplify everything
-  env.NIX_CFLAGS_COMPILE = "-Wno-error";
+  buildInputs = [
+    cairo
+    pango
+    pixman
+  ];
 
-  preBuild =
-    prepareGitDeps
-    + ''
-      npm run postinstall
-
-      # Without this, bcrypt and diskusage are not built
-      export CPPFLAGS="-I${nodejs_18}/include/node"
-      (
-        cd node_modules/bcrypt
-        ${nodejs_18.pkgs.node-pre-gyp}/bin/node-pre-gyp install --prefer-offline --build-from-source --nodedir=${nodejs_18}/include/node
-      )
-      (
-        cd node_modules/diskusage
-        ${nodejs_18.pkgs.node-gyp}/bin/node-gyp configure --nodedir=${nodejs_18}/include/node
-        ${nodejs_18.pkgs.node-gyp}/bin/node-gyp build --nodedir=${nodejs_18}/include/node
-      )
-    '';
+  nativeBuildInputs = [
+    cmake
+    pkg-config
+  ];
 
   npmWorkspace = "services/web";
   npmBuildScript = "webpack:production";
 
   installPhase = ''
+    # This is in the official Dockerfile. It lets the history-v1 service find
+    # the configuration needed to start.
+    cp server-ce/config/production.json services/history-v1/config/
+    cp server-ce/config/custom-environment-variables.json services/history-v1/config/
+
     mkdir -p $out/share
     cp -r {server-ce,services,libraries,node_modules} $out/share
-  '';
 
-  postFixup =
-    lib.concatMapStringsSep "\n"
+    ${lib.concatMapStringsSep "\n"
       (app: ''
-        makeWrapper ${nodejs_18}/bin/node $out/bin/overleaf-${app} \
-          --add-flags share/services/${app}/app.js \
+        main=$(node -e "console.log(require('$out/share/services/${app}/package.json').main || 'app.js')")
+        # Overleaf assumes that process.argv[1] is a path to a script when
+        # looking for the settings file, so we use the package directory here.
+        makeWrapper ${nodejs}/bin/node $out/bin/overleaf-${app} \
+          --add-flags "share/services/${app}/$main" \
           --chdir $out
       '')
       [
@@ -119,9 +84,14 @@ in
         "notifications"
         "project-history"
         "real-time"
-        "spelling"
         "web"
-      ];
+      ]
+    }
+  '';
+
+  makeCacheWritable = true;
+  dontUseCmakeConfigure = true;
+  env.CYPRESS_INSTALL_BINARY = "0";
 
   passthru.updateScript = ./update.sh;
 
@@ -129,10 +99,7 @@ in
     description = "A web-based collaborative LaTeX editor";
     homepage = "https://github.com/overleaf/overleaf";
     license = licenses.agpl3Only;
-    maintainers = with maintainers; [
-      camillemndn
-      julienmalka
-    ];
+    maintainers = [ ];
     mainProgram = "overleaf";
     platforms = platforms.unix;
   };

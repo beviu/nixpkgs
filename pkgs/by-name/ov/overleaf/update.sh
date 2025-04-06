@@ -1,26 +1,35 @@
 #!/usr/bin/env nix-shell
-#!nix-shell -i bash -p common-updater-scripts curl git gnugrep jq nix-update
+#!nix-shell -i bash -p curl jq python3 nix-prefetch-git nodejs
 
-set -euxo verbose
+set -eou pipefail
+shopt -s globstar nullglob
 
-VERSION=$(curl -s "https://hub.docker.com/v2/repositories/sharelatex/sharelatex/tags" | jq -r .results[2].name)
-REV=$(curl -s "https://hub.docker.com/v2/repositories/sharelatex/sharelatex/tags/$VERSION/images" | jq .[0].layers | grep -Po "MONOREPO_REVISION=\K[a-z0-9]*" -m 1)
+packageDir="$(readlink -f "$(dirname "$0")")"
 
-NIX_FILE=$(nix-instantiate --eval --strict -A "overleaf.meta.position" | sed -re 's/^"(.*):[0-9]+"$/\1/')
-NIX_DIR=$(dirname "$NIX_FILE")
-OLD_VERSION=$(nix-instantiate --eval --strict -A "overleaf.version")
+oldVersion="$(
+  nix-instantiate --eval --strict \
+    --expr "(import <nixpkgs> {}).callPackage ./package.nix {}" \
+    -A "version"
+)"
+newVersion="$(
+  curl -s "https://hub.docker.com/v2/repositories/sharelatex/sharelatex/tags" | \
+    jq -r '.results | map(.name | select(. | test("^\\d+\\.\\d+.\\d+$")) | split(".") | map(tonumber)) | max | join(".")'
+)"
 
-if [ "$VERSION" != "$OLD_VERSION" ]; then
-  (
-      cd /tmp
-      rm -rf overleaf
-      git clone https://github.com/overleaf/overleaf
-      cd overleaf
-      git reset --hard "$REV"
-      "$NIX_DIR"/patch-git-deps.py "$NIX_DIR"/git-deps.json
-      cp package-lock.json "$NIX_DIR"
-  )
+[ "$oldVersion" == "$newVersion" ] && exit
 
-  nix-update overleaf --version branch="$REV"
-  update-source-version overleaf "$VERSION" --ignore-same-hash
-fi
+revision="$(
+  curl -s "https://hub.docker.com/v2/repositories/sharelatex/sharelatex/tags/$newVersion/images" | \
+    jq -r '.[0].layers[].instruction | match("MONOREPO_REVISION=([0-9a-f]+)").captures[0].string'
+)"
+
+sourceDir="$(
+  nix-prefetch-git --url "https://github.com/overleaf/overleaf" --rev "$revision" --quiet | \
+    jq -r '.path'
+)"
+
+rm -rf "$packageDir/lockfiles"
+
+"$packageDir/gen-lockfiles.py" \
+  "$sourceDir/package-lock.json" \
+  --output "$packageDir/lockfiles"
