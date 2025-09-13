@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, path::Path};
 
 fn code_for_dbus_xml(xml: impl AsRef<std::path::Path>) -> String {
     dbus_codegen::generate(
@@ -17,6 +17,10 @@ fn main() {
     let systemd_dbus_interface_dir = std::path::Path::new(systemd_dbus_interface_dir.as_str());
 
     let out_path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    let fdo_dbus_code = code_for_dbus_xml(Path::new("src").join("org.freedesktop.DBus.xml"));
+    let mut file = std::fs::File::create(out_path.join("fdo_dbus.rs")).unwrap();
+    file.write_all(fdo_dbus_code.as_bytes()).unwrap();
 
     let systemd_manager_code =
         code_for_dbus_xml(systemd_dbus_interface_dir.join("org.freedesktop.systemd1.Manager.xml"));
