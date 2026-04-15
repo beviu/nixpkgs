@@ -248,12 +248,10 @@ in
 
         boot.extraModulePackages = [ cfg.modulePackage ];
 
-        systemd = {
-          packages = [ cfg.package ];
-          services = lib.mapAttrs' (mkUnits "") (
-            lib.filterAttrs (n: fs: (fs.fsType == "bcachefs") && (!utils.fsNeededForBoot fs)) config.fileSystems
-          );
-        };
+        systemd.packages = [ cfg.package ];
+        systemd.services = lib.mapAttrs' (mkUnits "") (
+          lib.filterAttrs (n: fs: (fs.fsType == "bcachefs") && (!utils.fsNeededForBoot fs)) config.fileSystems
+        );
       }
 
       (lib.mkIf ((config.boot.initrd.supportedFilesystems.bcachefs or false) || (bootFs != { })) {
